@@ -111,3 +111,19 @@ def test_coded_categories_are_also_categorical():
     structural, semantic = _types([i % 11 for i in range(200)])  # a 0-10 scale
     assert structural == types.INTEGER and types.CATEGORICAL in semantic
     assert types.CATEGORICAL not in _types(list(range(200)))[1]  # a real count
+
+
+def test_city_labels_need_names_not_gazetteer():
+    from profiler.core import _short_names
+    assert _short_names(["Chicago", "Houston", "New York", "San Luis Obispo"] * 10)
+    assert not _short_names(["cirugia, quimio, radia", "lo mismo que para cancer del cuerpo entero"] * 10)
+
+
+def test_integer_ids_need_an_id_token_in_the_name():
+    from profiler.profile_types import _id_name_tokens
+    for name in ("id", "ID", "facility_id", "uniqueID", "record-id", "Sample ID", "idx", "index"):
+        assert _id_name_tokens(name), name
+    for name in ("identify_issues", "paid", "valid", "covid_cases", "bias_index", "idle_time", "facilityid"):
+        assert not _id_name_tokens(name), name
+    assert types.ID not in _types(list(range(1, 200)), name="identify_issues")[1]
+    assert types.ID in _types(list(range(1, 200)), name="patient_id")[1]

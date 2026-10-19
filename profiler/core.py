@@ -480,6 +480,16 @@ def _resolve_admin_areas(array, datamart_geo_data):
 
 
 MIN_RESOLVED_SHARE = 0.7  # same as identify_types()
+GAZETTEER_LABELS = {"country", "state", "borough"}
+
+
+def _short_names(array, max_words=4):
+    """Values that read like names: mostly at most `max_words` words, no commas."""
+    values = [str(v).strip() for v in array if str(v).strip() not in ("", "nan", "None")]
+    if not values:
+        return False
+    namelike = sum(1 for v in values if "," not in v and len(v.split()) <= max_words)
+    return namelike >= 0.9 * len(values)
 CODE_LABELS = {"zip5", "zip9", "borough_code", "state_code"}
 _US_STATE_CODES = set(
     "AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND "
@@ -541,7 +551,11 @@ def process_column(
             admin_areas = _resolve_admin_areas(array, datamart_geo_data)
         implausible = (
             (label in PLACE_NAME_LABELS and not _plausible_place_names(array))
-            or (label in PLACE_NAME_LABELS and datamart_geo_data is not None and admin_areas is None)
+            # Countries, states and boroughs are in datamart-geo, so the gazetteer must
+            # confirm them (free-text survey answers were labelled "country"). Many cities
+            # aren't, so city labels only need short name-like values.
+            or (label in GAZETTEER_LABELS and datamart_geo_data is not None and admin_areas is None)
+            or (label == "city" and not _short_names(array))
             or (label in CODE_LABELS and not _plausible_codes(label, array, column_meta.get("name")))
         )
         if implausible:

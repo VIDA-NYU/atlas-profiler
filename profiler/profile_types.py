@@ -73,6 +73,19 @@ NA_TOKENS = frozenset({"#N/A", "#N/A N/A", "#NA", "-1.#IND", "-1.#QNAN", "-NaN",
 
 # Integer columns with few small values (survey scales, Likert items) are also categorical.
 MAX_CODED_CATEGORIES = 12
+_INTEGER_ID_TOKENS = {"id", "ids", "identifier", "idx"}
+
+
+def _id_name_tokens(name):
+    """Whether a column name has an ID token: snake/kebab/space parts and camelCase
+    humps (uniqueID, facility_id, ID), or is exactly "index"."""
+    name = name or ""
+    if name.strip().lower() == "index":
+        return True
+    parts = re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+", name)
+    return any(part.lower() in _INTEGER_ID_TOKENS for part in parts)
+
+
 MIN_ROWS_FOR_IDS = 20
 MIN_ID_UNIQUENESS = 0.95
 
@@ -338,14 +351,9 @@ def identify_types(array, name, datamart_geo_data, manual=None):
             # Identify ids
             # TODO: is this enough?
             # TODO: what about false positives?
-            if (
-                name.lower().startswith("id")
-                or name.lower().endswith("id")
-                or name.lower().startswith("identifier")
-                or name.lower().endswith("identifier")
-                or name.lower().startswith("index")
-                or name.lower().endswith("index")
-            ):
+            # Whole name tokens only: prefix/suffix matching marked identify_issues,
+            # paid, valid, covid_cases and composite "..._index" scores as IDs.
+            if _id_name_tokens(name):
                 semantic_types_dict[types.ID] = None
 
             # Count distinct values
