@@ -23,6 +23,7 @@ from .spatial import (
     parse_wkt_column,
     GeoClassifier,
     HybridGeoClassifier,
+    disambiguate_admin_areas,
 )
 from .temporal import get_temporal_resolution, parse_date
 from . import types
@@ -147,15 +148,18 @@ class NoOpContext:
 
 
 def _scan_csv(pl, path, sep, nrows=None):
-    return pl.scan_csv(
-        path,
-        separator=sep,
-        infer_schema=False,
-        missing_utf8_is_empty_string=True,
-        low_memory=True,
-        rechunk=False,
-        n_rows=nrows,
-    )
+    """Lazy CSV scan with every column as text and missing values as "".
+
+    Works on polars 1.x and 2.x: 2.0 removed `missing_utf8_is_empty_string` (and
+    `rechunk`), so there the same result comes from filling nulls afterwards; with
+    infer_schema=False every column is a string, so the two are equivalent.
+    """
+    import inspect
+
+    kwargs = dict(separator=sep, infer_schema=False, low_memory=True, n_rows=nrows)
+    if "missing_utf8_is_empty_string" in inspect.signature(pl.scan_csv).parameters:
+        return pl.scan_csv(path, missing_utf8_is_empty_string=True, **kwargs)
+    return pl.scan_csv(path, **kwargs).with_columns(pl.all().fill_null(""))
 
 
 def _collect_streaming(lazy_frame):
@@ -415,6 +419,47 @@ def load_data(data, load_max_size=None, indexes=True):
     return data, metadata, data.columns, full_data_stats
 
 
+# Geo-classifier labels that mean "this column holds place names". Code-like labels
+# (zip5, borough_code, state_code, ...) legitimately hold numbers and aren't checked.
+PLACE_NAME_LABELS = {"borough", "city", "state", "country"}
+_YES_NO = {"yes", "no", "y", "n", "true", "false", "t", "f"}
+
+
+def _plausible_place_names(array):
+    """False when values can't be place names: mostly numbers, yes/no, or <= 2 distinct.
+
+    The ML geo-classifier labels such columns as places (0/1 flags, survey codes,
+    unemployment rates), which then turn into wrong admin areas and map boxes.
+    """
+    values = [str(v).strip() for v in array if str(v).strip() not in ("", "nan", "None")]
+    distinct = set(values)
+    if len(distinct) <= 2:
+        return False
+    lowered = {v.lower() for v in distinct}
+    if len(lowered & _YES_NO) == len(lowered):
+        return False
+    numeric = sum(1 for v in distinct if _NUMBER_RE.fullmatch(v))
+    return numeric <= len(distinct) / 2
+
+
+_NUMBER_RE = re.compile(r"[-+]?\d+(\.\d+)?")
+
+
+def _resolve_admin_areas(array, datamart_geo_data):
+    """(level, areas) for a place-name column, as identify_types() would compute.
+
+    Resolves each distinct name once, then disambiguates; None if fewer than 3
+    distinct names or nothing resolves.
+    """
+    distinct = sorted({str(v).strip() for v in array} - {"", "nan", "None"})
+    if len(distinct) < 3:
+        return None
+    resolved = [r for r in datamart_geo_data.resolve_names_all(distinct) if r]
+    if not resolved:
+        return None
+    return disambiguate_admin_areas(resolved)
+
+
 def process_column(
     array,
     column_meta,
@@ -434,11 +479,21 @@ def process_column(
     # Use pre-computed geo_prediction if available and no manual override
     if geo_prediction is not None and manual is None:
         label = geo_prediction["label"]
-        if label in GEO_CLASSIFIER_SPATIAL_MAP:
+        if label in PLACE_NAME_LABELS and not _plausible_place_names(array):
+            logger.info(
+                "Ignoring geo_classifier label %r for column %r: values aren't place names",
+                label,
+                column_meta.get("name"),
+            )
+        elif label in GEO_CLASSIFIER_SPATIAL_MAP:
             # Geo classifier identified a spatial type
             used_geo_prediction = True
             structural_type, semantic_list = GEO_CLASSIFIER_SPATIAL_MAP[label]
             semantic_types_dict = {st: None for st in semantic_list}
+            if types.ADMIN in semantic_types_dict and datamart_geo_data is not None:
+                # identify_types() is skipped on this path, and with it the
+                # datamart-geo resolution that gives admin areas their coverage.
+                semantic_types_dict[types.ADMIN] = _resolve_admin_areas(array, datamart_geo_data)
             additional_meta["geo_classifier"] = {
                 "label": label,
                 "confidence": geo_prediction["confidence"],
