@@ -44,3 +44,39 @@ def test_admin_areas_resolved_once_per_distinct_name(monkeypatch):
 
 def test_admin_areas_need_three_distinct_names():
     assert _resolve_admin_areas(pandas.Series(["Kenya", "Uganda"]), FakeGeo()) is None
+
+
+# --- type fixes -------------------------------------------------------------
+from profiler import types
+from profiler.profile_types import identify_types, to_number
+
+
+def _types(values, name="col"):
+    structural, semantic, meta = identify_types([str(v) for v in values], name, None)
+    return structural, set(semantic)
+
+
+def test_written_missing_values_dont_make_numbers_text():
+    structural, _ = _types([str(i * 1.5) for i in range(90)] + ["NULL", "NA", "n/a", "NaN"] * 3)
+    assert structural == types.FLOAT
+
+
+def test_formatted_numbers_are_numbers():
+    assert _types([f"${i:,}.50" for i in range(1000, 1100)])[0] == types.FLOAT
+    assert _types([f"{i}.5%" for i in range(100)])[0] == types.FLOAT
+    assert _types([f"{i:,}" for i in range(10_000, 10_100)])[0] == types.FLOAT
+    assert to_number("$1,234.50") == 1234.5 and to_number("12%") == 12.0
+    assert to_number("1,5") is None  # a decimal comma is not a thousands separator
+
+
+def test_identifiers_detected():
+    assert types.ID in _types([f"R{i:06d}X" for i in range(100)])[1]
+    assert types.ID in _types([f"{i:08x}-{i:04x}-{i:04x}" for i in range(100)])[1]
+    assert types.ID in _types([f"S{i}" for i in range(100)], name="sample_id")[1]
+    assert types.ID not in _types([f"Station number {i}" for i in range(100)])[1]  # has spaces
+
+
+def test_coded_categories_are_also_categorical():
+    structural, semantic = _types([i % 11 for i in range(200)])  # a 0-10 scale
+    assert structural == types.INTEGER and types.CATEGORICAL in semantic
+    assert types.CATEGORICAL not in _types(list(range(200)))[1]  # a real count

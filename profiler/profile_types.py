@@ -57,6 +57,39 @@ _re_latlong_point = re.compile(
     r"^\(" r"-?[0-9]{1,3}\.[0-9]{1,15}" r", ?" r"-?[0-9]{1,3}\.[0-9]{1,15}" r"\)$"
 )
 _re_whitespace = re.compile(r"\s+")
+# Numbers written with a currency sign, thousands separators or a percent sign.
+# Thousands groups must be exactly 3 digits, so a decimal comma ("1,5") never matches.
+_re_formatted_number = re.compile(
+    r"^[+-]?[$€£]?\s?(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?\s?%?$"
+)
+_re_uuid = re.compile(r"^[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}$|^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}$")
+_re_code = re.compile(r"^(?=.*[0-9])[A-Za-z0-9_.:/#-]{3,40}$")  # no spaces, has a digit
+_re_id_name = re.compile(r"(^|[^a-z])(id|ids|identifier|uuid|guid|key|code|accession)([^a-z]|$)", re.IGNORECASE)
+
+# Written-out missing values (pandas' default na_values): counted as empty, so
+# "NULL" in some rows doesn't turn a numeric column into text.
+NA_TOKENS = frozenset({"#N/A", "#N/A N/A", "#NA", "-1.#IND", "-1.#QNAN", "-NaN", "-nan", "1.#IND",
+                       "1.#QNAN", "<NA>", "N/A", "NA", "NULL", "NaN", "None", "n/a", "nan", "null"})
+
+# Integer columns with few small values (survey scales, Likert items) are also categorical.
+MAX_CODED_CATEGORIES = 12
+MIN_ROWS_FOR_IDS = 20
+MIN_ID_UNIQUENESS = 0.95
+
+
+def to_number(value):
+    """float for plain or formatted numbers ($1,234.50, 12%), else None."""
+    text = str(value).strip()
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    if _re_formatted_number.match(text):
+        try:
+            return float(text.replace("$", "").replace("€", "").replace("£", "").replace(",", "").replace("%", "").strip())
+        except ValueError:
+            return None
+    return None
 
 
 # Tolerable ratio of unclean data
@@ -78,11 +111,13 @@ def regular_exp_count(array):
     re_count = collections.Counter()
 
     for elem in array:
-        if not elem:
+        if not elem or elem.strip() in NA_TOKENS:
             re_count["empty"] += 1
         elif _re_int.match(elem):
             re_count["int"] += 1
         elif _re_float.match(elem):
+            re_count["float"] += 1
+        elif _re_formatted_number.match(elem):
             re_count["float"] += 1
         elif _re_url.match(elem):
             re_count["url"] += 1
@@ -202,7 +237,8 @@ def identify_types(array, name, datamart_geo_data, manual=None):
     if structural_type != types.MISSING_DATA and re_count["empty"] > 0:
         column_meta["missing_values_ratio"] = re_count["empty"] / num_total
 
-    distinct_values = set(e for e in array if e)
+    distinct_values = set(e for e in array if e and e.strip() not in NA_TOKENS)
+    num_present = num_total - re_count["empty"]
 
     semantic_types_dict = {}
     if manual:
@@ -247,6 +283,18 @@ def identify_types(array, name, datamart_geo_data, manual=None):
         if structural_type == types.TEXT:
             categorical = False
 
+            # Identifiers: (almost) every value unique, and code-like or an id-like name
+            present = [e.strip() for e in array if e and e.strip() not in NA_TOKENS]
+            if (
+                num_present >= MIN_ROWS_FOR_IDS
+                and len(distinct_values) >= MIN_ID_UNIQUENESS * num_present
+                and (
+                    _re_id_name.search(name)
+                    or sum(1 for e in present if _re_uuid.match(e) or _re_code.match(e)) >= 0.9 * len(present)
+                )
+            ):
+                semantic_types_dict[types.ID] = None
+
             # URLs
             if num_url >= threshold:
                 semantic_types_dict[types.URL] = None
@@ -271,7 +319,9 @@ def identify_types(array, name, datamart_geo_data, manual=None):
                 1,
                 (1.0 - TEXT_WORDS_THRESHOLD) * (num_total - re_count["empty"]),
             )
-            if not categorical and num_text >= text_threshold:
+            if types.ID in semantic_types_dict:
+                column_meta["num_distinct_values"] = len(distinct_values)
+            elif not categorical and num_text >= text_threshold:
                 # Free text
                 semantic_types_dict[types.TEXT] = None
             else:
@@ -300,6 +350,16 @@ def identify_types(array, name, datamart_geo_data, manual=None):
 
             # Count distinct values
             column_meta["num_distinct_values"] = len(distinct_values)
+
+            # Coded categories: a handful of small integers (0-10 scales, 1-5 codes)
+            small = [to_number(v) for v in distinct_values]
+            if (
+                num_present >= MIN_ROWS_FOR_IDS
+                and 2 < len(distinct_values) <= MAX_CODED_CATEGORIES
+                and all(v is not None and 0 <= v <= MAX_CODED_CATEGORIES for v in small)
+                and types.ID not in semantic_types_dict
+            ):
+                semantic_types_dict[types.CATEGORICAL] = distinct_values
 
             # Identify years
             if name.strip().lower() == "year":

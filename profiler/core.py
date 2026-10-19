@@ -11,7 +11,7 @@ import re
 import warnings
 
 from .numerical import mean_stddev, get_numerical_ranges
-from .profile_types import identify_types, determine_dataset_type
+from .profile_types import NA_TOKENS, identify_types, determine_dataset_type, to_number
 from .spatial import (
     LatLongColumn,
     Geohasher,
@@ -173,8 +173,12 @@ def _polars_to_pandas(frame):
 def _csv_column_stats(pl, path, sep, column):
     scan = _scan_csv(pl, path, sep)
     value = pl.col(column).str.strip_chars()
-    value = pl.when(value.is_null() | (value == "")).then(None).otherwise(value)
-    numeric = value.cast(pl.Float64, strict=False)
+    value = pl.when(value.is_null() | (value == "") | value.is_in(list(NA_TOKENS))).then(None).otherwise(value)
+    # Formatted numbers ($1,234.50, 12%) count as numbers; thousands commas are only
+    # stripped from values with 3-digit groups, so a decimal comma isn't misread.
+    formatted = value.str.contains(r"^[+-]?[$€£]?\s?[0-9]{1,3}(,[0-9]{3})+(\.[0-9]+)?\s?%?$")
+    cleaned = pl.when(formatted).then(value.str.replace_all(",", "")).otherwise(value)
+    numeric = cleaned.str.replace_all(r"^([+-]?)[$€£]\s?|\s?%$", "$1").cast(pl.Float64, strict=False)
 
     stats = _collect_streaming(
         scan.select(
@@ -209,6 +213,19 @@ def _csv_column_stats(pl, path, sep, column):
     return stats
 
 
+def _sniff_separator(path):
+    """Delimiter from the first 64 KiB (, ; tab |); by extension if that fails."""
+    import csv
+
+    default = "\t" if path.endswith(".tsv") else ","
+    with open(path, encoding="utf-8", errors="replace", newline="") as fh:
+        head = fh.read(64 * 1024)
+    try:
+        return csv.Sniffer().sniff(head, delimiters=",;\t|").delimiter
+    except csv.Error:
+        return default
+
+
 def _load_csv_path(data, load_max_size):
     try:
         import polars as pl
@@ -225,7 +242,7 @@ def _load_csv_path(data, load_max_size):
     metadata["_csv_path"] = path
     logger.info("File size: %r bytes", metadata["size"])
 
-    sep = "\t" if path.endswith(".tsv") else ","
+    sep = _sniff_separator(path)
     metadata["_csv_sep"] = sep
     scan = _scan_csv(pl, path, sep)
     column_names = scan.collect_schema().names()
@@ -555,13 +572,9 @@ def process_column(
         # Get numerical values needed for either ranges or plot
         numerical_values = []
         for e in array:
-            try:
-                e = float(e)
-            except ValueError:
-                pass
-            else:
-                if -3.4e38 < e < 3.4e38:  # Overflows in ES
-                    numerical_values.append(e)
+            e = to_number(e)  # also $1,234.50 and 12%
+            if e is not None and -3.4e38 < e < 3.4e38:  # Overflows in ES
+                numerical_values.append(e)
 
         # Compute ranges from numerical values
         if coverage:
