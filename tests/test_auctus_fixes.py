@@ -46,6 +46,37 @@ def test_admin_areas_need_three_distinct_names():
     assert _resolve_admin_areas(pandas.Series(["Kenya", "Uganda"]), FakeGeo()) is None
 
 
+def test_numbers_are_never_geocoded():
+    geo = FakeGeo()
+    assert _resolve_admin_areas(pandas.Series([str(i) for i in range(1, 200)]), geo) is None
+    assert geo.asked is None  # not even looked up
+
+
+def test_most_names_must_resolve(monkeypatch):
+    monkeypatch.setattr(core, "disambiguate_admin_areas", lambda resolved: (0, resolved))
+
+    class HalfGeo(FakeGeo):
+        def resolve_names_all(self, names):
+            return [[FakeArea(n)] if i % 2 == 0 else [] for i, n in enumerate(names)]
+
+    answers = pandas.Series(["cirugia", "limpieza", "ir al dentista", "NS", "radiacion", "aseo bucal"])
+    assert _resolve_admin_areas(answers, HalfGeo()) is None  # 3 of 6 is not enough
+
+
+def test_geographic_code_labels_need_real_codes():
+    from profiler.core import _plausible_codes
+    assert not _plausible_codes("borough_code", ["A", "B", "C", "D", "E"] * 10, "Q2-19")
+    assert not _plausible_codes("borough_code", [str(i) for i in range(1, 300)], "Identifier")
+    assert _plausible_codes("borough_code", ["MN", "BX", "BK"] * 10, "boro")
+    assert not _plausible_codes("borough_code", ["1", "2", "3", "4", "5"] * 10, "LevEduc")
+    assert _plausible_codes("borough_code", ["1", "2", "3", "4", "5"] * 10, "BoroCode")
+    assert not _plausible_codes("state_code", ["1", "2"] * 10, "protect_stis")
+    assert _plausible_codes("state_code", ["36", "34", "9"] * 10, "state_fips")
+    assert _plausible_codes("state_code", ["NY", "NJ", "CT"] * 10, "st")
+    assert not _plausible_codes("zip5", ["1", "2", "3"] * 10, "facilityid")
+    assert _plausible_codes("zip5", ["10003", "11201", "10458"] * 10, "zip")
+
+
 # --- type fixes -------------------------------------------------------------
 from profiler import types
 from profiler.profile_types import identify_types, to_number

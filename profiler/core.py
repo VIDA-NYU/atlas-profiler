@@ -463,18 +463,57 @@ _NUMBER_RE = re.compile(r"[-+]?\d+(\.\d+)?")
 
 
 def _resolve_admin_areas(array, datamart_geo_data):
-    """(level, areas) for a place-name column, as identify_types() would compute.
+    """(level, areas) for a place-name column, or None if it doesn't look like one.
 
-    Resolves each distinct name once, then disambiguates; None if fewer than 3
-    distinct names or nothing resolves.
+    Like identify_types(): numbers are dropped (they aren't place names; a column of
+    row numbers once resolved to provinces of Iran), at least 3 distinct names are
+    needed, and more than MIN_RESOLVED_SHARE of them must resolve.
     """
     distinct = sorted({str(v).strip() for v in array} - {"", "nan", "None"})
+    distinct = [v for v in distinct if not _NUMBER_RE.fullmatch(v)]
     if len(distinct) < 3:
         return None
     resolved = [r for r in datamart_geo_data.resolve_names_all(distinct) if r]
-    if not resolved:
+    if len(resolved) <= MIN_RESOLVED_SHARE * len(distinct):
         return None
     return disambiguate_admin_areas(resolved)
+
+
+MIN_RESOLVED_SHARE = 0.7  # same as identify_types()
+CODE_LABELS = {"zip5", "zip9", "borough_code", "state_code"}
+_US_STATE_CODES = set(
+    "AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND "
+    "OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY PR GU VI AS MP".split()
+)
+_BOROUGH_CODES = {"1", "2", "3", "4", "5", "MN", "BX", "BK", "QN", "SI"}
+
+
+def _plausible_codes(label, array, name):
+    """Whether a column labelled as a geographic code actually holds such codes.
+
+    The geo-classifier labels survey answers (A-E, 1-5 scales) and row numbers as
+    borough or state codes.
+    """
+    values = [str(v).strip() for v in array if str(v).strip() not in ("", "nan", "None")]
+    if not values:
+        return False
+    distinct = set(values)
+    if label in ("zip5", "zip9"):
+        return sum(1 for v in values if re.fullmatch(r"\d{5}(-?\d{4})?", v)) >= 0.8 * len(values)
+    if label == "borough_code":
+        upper = {v.upper() for v in distinct}
+        if not upper <= _BOROUGH_CODES or len(distinct) < 2:
+            return False
+        # 1-5 is also every survey scale; numeric codes need a borough-ish column name
+        return not upper <= {"1", "2", "3", "4", "5"} or bool(re.search(r"boro", name or "", re.IGNORECASE))
+    if label == "state_code":
+        if {v.upper() for v in distinct} <= _US_STATE_CODES:
+            return len(distinct) >= 2
+        # FIPS numbers are only believable when the column name says so
+        return bool(re.search(r"state|fips", name or "", re.IGNORECASE)) and all(
+            v.isdigit() and 1 <= int(v) <= 78 for v in distinct
+        )
+    return True
 
 
 def process_column(
@@ -496,9 +535,18 @@ def process_column(
     # Use pre-computed geo_prediction if available and no manual override
     if geo_prediction is not None and manual is None:
         label = geo_prediction["label"]
-        if label in PLACE_NAME_LABELS and not _plausible_place_names(array):
+        admin_areas = None
+        if label in PLACE_NAME_LABELS and datamart_geo_data is not None and _plausible_place_names(array):
+            # A place-name label must be confirmed by the gazetteer.
+            admin_areas = _resolve_admin_areas(array, datamart_geo_data)
+        implausible = (
+            (label in PLACE_NAME_LABELS and not _plausible_place_names(array))
+            or (label in PLACE_NAME_LABELS and datamart_geo_data is not None and admin_areas is None)
+            or (label in CODE_LABELS and not _plausible_codes(label, array, column_meta.get("name")))
+        )
+        if implausible:
             logger.info(
-                "Ignoring geo_classifier label %r for column %r: values aren't place names",
+                "Ignoring geo_classifier label %r for column %r: values don't fit it",
                 label,
                 column_meta.get("name"),
             )
@@ -507,10 +555,10 @@ def process_column(
             used_geo_prediction = True
             structural_type, semantic_list = GEO_CLASSIFIER_SPATIAL_MAP[label]
             semantic_types_dict = {st: None for st in semantic_list}
-            if types.ADMIN in semantic_types_dict and datamart_geo_data is not None:
+            if types.ADMIN in semantic_types_dict and admin_areas is not None:
                 # identify_types() is skipped on this path, and with it the
                 # datamart-geo resolution that gives admin areas their coverage.
-                semantic_types_dict[types.ADMIN] = _resolve_admin_areas(array, datamart_geo_data)
+                semantic_types_dict[types.ADMIN] = admin_areas
             additional_meta["geo_classifier"] = {
                 "label": label,
                 "confidence": geo_prediction["confidence"],
