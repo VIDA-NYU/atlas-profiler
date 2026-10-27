@@ -156,6 +156,7 @@ def test_counts_and_scores_are_not_coded_categories():
     for name in ("num_child", "hhaidtotal", "fiesscore", "pbqscore0", "n_visits"):
         assert types.CATEGORICAL not in _types([str(i % 6) for i in range(100)], name=name)[1], name
     assert types.CATEGORICAL in _types([str(i % 6) for i in range(100)], name="marital")[1]
+    assert types.CATEGORICAL in _types([str(i % 4) for i in range(100)], name="fiesscore_cat")[1]  # binned score
 
 
 def test_iso_country_codes_need_a_country_name():

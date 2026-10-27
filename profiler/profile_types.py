@@ -80,6 +80,8 @@ MAX_REPEATED_LABELS = 500
 MAX_LABEL_CHARS = 60
 # Names of counts and summed scores: small integers there are quantities, not codes.
 _COUNT_NAME = re.compile(r"count|total|score|(^|[^a-z])(num|nb|n|number|qty)([^a-z]|$)", re.IGNORECASE)
+# ...unless the name marks a category version of it (fiesscore_cat, age_group).
+_CATEGORY_NAME = re.compile(r"(^|[^a-z])(cat|category|categories|level|group|grp|band)([^a-z]|$)", re.IGNORECASE)
 # Column names that make 2/3-letter codes ISO country codes (not US states or currencies).
 _COUNTRY_NAME = re.compile(r"countr|nation|iso|ctry|cntry", re.IGNORECASE)
 
@@ -414,7 +416,7 @@ def identify_types(array, name, datamart_geo_data, manual=None):
                 and 1 <= len(distinct_values) <= MAX_CODED_CATEGORIES
                 and all(v is not None and 0 <= v <= MAX_CODED_CATEGORIES for v in small)
                 and (len(distinct_values) > 2 or not set(small) <= {0, 1})
-                and not _COUNT_NAME.search(name or "")
+                and (not _COUNT_NAME.search(name or "") or _CATEGORY_NAME.search(name or ""))
                 and types.ID not in semantic_types_dict
             ):
                 semantic_types_dict[types.CATEGORICAL] = distinct_values
