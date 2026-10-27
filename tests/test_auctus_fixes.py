@@ -107,12 +107,6 @@ def test_identifiers_detected():
     assert types.ID not in _types([f"Station number {i}" for i in range(100)])[1]  # has spaces
 
 
-def test_coded_categories_are_also_categorical():
-    structural, semantic = _types([i % 11 for i in range(200)])  # a 0-10 scale
-    assert structural == types.INTEGER and types.CATEGORICAL in semantic
-    assert types.CATEGORICAL not in _types(list(range(200)))[1]  # a real count
-
-
 def test_city_labels_need_names_not_gazetteer():
     from profiler.core import _short_names
     assert _short_names(["Chicago", "Houston", "New York", "San Luis Obispo"] * 10)
@@ -150,19 +144,6 @@ def test_free_text_stays_text():
     assert types.TEXT in semantic and types.CATEGORICAL not in semantic
 
 
-def test_one_or_two_value_codes_are_categorical_but_flags_are_not():
-    assert types.CATEGORICAL in _types(["0", "2"] * 50, name="survey1_complete")[1]   # REDCap status
-    assert types.CATEGORICAL in _types(["1", "2"] * 50, name="control")[1]
-    assert types.CATEGORICAL not in _types(["0", "1"] * 50, name="flag")[1]           # boolean
-
-
-def test_counts_and_scores_are_not_coded_categories():
-    for name in ("num_child", "hhaidtotal", "fiesscore", "pbqscore0", "n_visits"):
-        assert types.CATEGORICAL not in _types([str(i % 6) for i in range(100)], name=name)[1], name
-    assert types.CATEGORICAL in _types([str(i % 6) for i in range(100)], name="marital")[1]
-    assert types.CATEGORICAL in _types([str(i % 4) for i in range(100)], name="fiesscore_cat")[1]  # binned score
-
-
 def test_iso_country_codes_need_a_country_name():
     from profiler.profile_types import iso_country_names
     names = iso_country_names(["CN", "US", "TR", "NL", "XX"], "Country")
@@ -176,3 +157,9 @@ def test_phone_numbers_are_not_identifiers():
     assert types.ID not in _types(phones, name="phone")[1]
     assert types.ID in _types([f"S{i:05d}" for i in range(300)], name="sample")[1]
     assert types.ID in _types([f"978-5-{1000 + i}-0" for i in range(300)], name="ISBN")[1]  # digits, named
+
+
+def test_small_integers_stay_numeric_without_a_codebook():
+    for name in ("marital", "children", "survey1_complete", "q1"):
+        structural, semantic = _types([str(i % 6) for i in range(200)], name=name)
+        assert structural == types.INTEGER and types.CATEGORICAL not in semantic, name

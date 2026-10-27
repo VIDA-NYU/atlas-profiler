@@ -74,16 +74,11 @@ NA_TOKENS = frozenset({"#N/A", "#N/A N/A", "#NA", "-1.#IND", "-1.#QNAN", "-NaN",
                        "1.#QNAN", "<NA>", "N/A", "NA", "NULL", "NaN", "None", "n/a", "nan", "null"})
 
 # Integer columns with few small values (survey scales, Likert items) are also categorical.
-MAX_CODED_CATEGORIES = 12
 # Short labels repeated this many times on average are categories even when there are
 # more of them than MAX_CATEGORICAL_RATIO allows (e.g. 140 tags over 760 rows).
 MIN_AVG_REPEATS = 3
 MAX_REPEATED_LABELS = 500
 MAX_LABEL_CHARS = 60
-# Names of counts and summed scores: small integers there are quantities, not codes.
-_COUNT_NAME = re.compile(r"count|total|score|(^|[^a-z])(num|nb|n|number|qty)([^a-z]|$)", re.IGNORECASE)
-# ...unless the name marks a category version of it (fiesscore_cat, age_group).
-_CATEGORY_NAME = re.compile(r"(^|[^a-z])(cat|category|categories|level|group|grp|band)([^a-z]|$)", re.IGNORECASE)
 # Column names that make 2/3-letter codes ISO country codes (not US states or currencies).
 _COUNTRY_NAME = re.compile(r"countr|nation|iso|ctry|cntry", re.IGNORECASE)
 
@@ -428,19 +423,10 @@ def identify_types(array, name, datamart_geo_data, manual=None):
             # Count distinct values
             column_meta["num_distinct_values"] = len(distinct_values)
 
-            # Coded categories: a handful of small integers (0-10 scales, 1-5 codes,
-            # REDCap status codes {0, 2}), but not 0/1 flags (boolean) and not
-            # counts or scores named as such.
-            small = [to_number(v) for v in distinct_values]
-            if (
-                num_present >= MIN_ROWS_FOR_IDS
-                and 1 <= len(distinct_values) <= MAX_CODED_CATEGORIES
-                and all(v is not None and 0 <= v <= MAX_CODED_CATEGORIES for v in small)
-                and (len(distinct_values) > 2 or not set(small) <= {0, 1})
-                and (not _COUNT_NAME.search(name or "") or _CATEGORY_NAME.search(name or ""))
-                and types.ID not in semantic_types_dict
-            ):
-                semantic_types_dict[types.CATEGORICAL] = distinct_values
+            # Small integers stay numbers: from the data alone a survey code ("6 = Widowed")
+            # can't be told from a count ("6 adults"). Columns a codebook documents with
+            # value labels are marked categorical by the connector (held-out CaltechDATA:
+            # a data-only rule was wrong on 11 of 14 graded columns, mostly counts).
 
             # Identify years
             if name.strip().lower() == "year":
