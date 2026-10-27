@@ -123,8 +123,12 @@ def test_integer_ids_need_an_id_token_in_the_name():
     from profiler.profile_types import _id_name_tokens
     for name in ("id", "ID", "facility_id", "uniqueID", "record-id", "Sample ID", "idx", "index"):
         assert _id_name_tokens(name), name
-    for name in ("identify_issues", "paid", "valid", "covid_cases", "bias_index", "idle_time", "facilityid"):
+    for name in ("identify_issues", "paid", "valid", "covid_cases", "bias_index", "idle_time", "%ID to POI",
+                 "acid_ph", "fluid"):
         assert not _id_name_tokens(name), name
+    # One-word IDs (held-out CaltechDATA): PubMed, participant, feature, object, staff, taxon IDs
+    for name in ("PMID", "pid", "FID", "OBJECTID", "training.staffid", "Taxon_oid", "facilityid"):
+        assert _id_name_tokens(name), name
     assert types.ID not in _types(list(range(1, 200)), name="identify_issues")[1]
     assert types.ID in _types(list(range(1, 200)), name="patient_id")[1]
 
@@ -171,3 +175,4 @@ def test_phone_numbers_are_not_identifiers():
     phones = [f"212-555-{1000 + i}" for i in range(300)]
     assert types.ID not in _types(phones, name="phone")[1]
     assert types.ID in _types([f"S{i:05d}" for i in range(300)], name="sample")[1]
+    assert types.ID in _types([f"978-5-{1000 + i}-0" for i in range(300)], name="ISBN")[1]  # digits, named

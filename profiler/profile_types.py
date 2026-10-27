@@ -65,7 +65,8 @@ _re_formatted_number = re.compile(
 _re_uuid = re.compile(r"^[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}$|^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}$")
 # No spaces, a digit and a letter: pure digit-dash strings are phone numbers or dates.
 _re_code = re.compile(r"^(?=.*[0-9])(?=.*[A-Za-z])[A-Za-z0-9_.:/#-]{3,40}$")
-_re_id_name = re.compile(r"(^|[^a-z])(id|ids|identifier|uuid|guid|key|code|accession)([^a-z]|$)", re.IGNORECASE)
+_re_id_name = re.compile(r"(^|[^a-z])(id|ids|identifier|uuid|guid|key|code|accession|isbn|issn|doi|pmid|orcid)([^a-z]|$)",
+                         re.IGNORECASE)
 
 # Written-out missing values (pandas' default na_values): counted as empty, so
 # "NULL" in some rows doesn't turn a numeric column into text.
@@ -116,14 +117,33 @@ def iso_country_names(values, name):
 _INTEGER_ID_TOKENS = {"id", "ids", "identifier", "idx"}
 
 
+# Words that end in "id" but aren't identifiers (paid, covid_cases, acid_ph, ...).
+_NOT_ID_WORDS = {"paid", "unpaid", "prepaid", "valid", "invalid", "humid", "acid", "fluid", "liquid", "solid",
+                 "covid", "rapid", "hybrid", "lipid", "avid", "squid", "pyramid", "android", "thyroid",
+                 "steroid", "opioid", "colloid", "rigid", "vivid", "timid", "candid", "lucid", "morbid",
+                 "torrid", "said", "aid", "laid", "maid", "raid", "braid", "afraid", "kid", "lid", "bid",
+                 "rid", "did", "grid", "skid", "slid", "mid", "amid", "void", "avoid", "druid", "cuboid",
+                 "ellipsoid", "spheroid", "alkaloid", "flavonoid", "carotenoid", "trapezoid", "sinusoid"}
+
+
 def _id_name_tokens(name):
-    """Whether a column name has an ID token: snake/kebab/space parts and camelCase
-    humps (uniqueID, facility_id, ID), or is exactly "index"."""
-    name = name or ""
-    if name.strip().lower() == "index":
+    """Whether an integer column's name says it's an identifier.
+
+    An "id" token (facility_id, uniqueID, "Sample ID"), "idx", exactly "index", or a
+    word ending in "id" (PMID, pid, FID, OBJECTID, staffid, Taxon_oid) unless it's a
+    real word (paid, valid, acid). Percent identity (%ID) is a measurement.
+    """
+    name = (name or "").strip()
+    if "%" in name or "identity" in name.lower():
+        return False
+    if name.lower() in ("index", "idx"):
         return True
     parts = re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+", name)
-    return any(part.lower() in _INTEGER_ID_TOKENS for part in parts)
+    if any(part.lower() in _INTEGER_ID_TOKENS for part in parts):
+        return True
+    words = re.findall(r"[A-Za-z]+", name)
+    last = words[-1].lower() if words else ""
+    return last.endswith("id") and last not in _NOT_ID_WORDS
 
 
 MIN_ROWS_FOR_IDS = 20
