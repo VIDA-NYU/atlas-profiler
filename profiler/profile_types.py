@@ -63,7 +63,8 @@ _re_formatted_number = re.compile(
     r"^[+-]?[$€£]?\s?(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?\s?%?$"
 )
 _re_uuid = re.compile(r"^[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}$|^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}$")
-_re_code = re.compile(r"^(?=.*[0-9])[A-Za-z0-9_.:/#-]{3,40}$")  # no spaces, has a digit
+# No spaces, a digit and a letter: pure digit-dash strings are phone numbers or dates.
+_re_code = re.compile(r"^(?=.*[0-9])(?=.*[A-Za-z])[A-Za-z0-9_.:/#-]{3,40}$")
 _re_id_name = re.compile(r"(^|[^a-z])(id|ids|identifier|uuid|guid|key|code|accession)([^a-z]|$)", re.IGNORECASE)
 
 # Written-out missing values (pandas' default na_values): counted as empty, so

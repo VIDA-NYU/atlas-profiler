@@ -165,3 +165,9 @@ def test_iso_country_codes_need_a_country_name():
     assert names[:2] == ["China", "United States"] and names[-1] == "XX"
     assert iso_country_names(["CA", "NY", "TX"], "state") is None        # US states
     assert iso_country_names(["EUR", "CAD", "USD"], "Currency") is None  # currencies
+
+
+def test_phone_numbers_are_not_identifiers():
+    phones = [f"212-555-{1000 + i}" for i in range(300)]
+    assert types.ID not in _types(phones, name="phone")[1]
+    assert types.ID in _types([f"S{i:05d}" for i in range(300)], name="sample")[1]
