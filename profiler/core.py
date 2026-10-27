@@ -11,7 +11,7 @@ import re
 import warnings
 
 from .numerical import mean_stddev, get_numerical_ranges
-from .profile_types import NA_TOKENS, identify_types, determine_dataset_type, to_number
+from .profile_types import iso_country_names, NA_TOKENS, identify_types, determine_dataset_type, to_number
 from .spatial import (
     LatLongColumn,
     Geohasher,
@@ -462,7 +462,7 @@ def _plausible_place_names(array):
 _NUMBER_RE = re.compile(r"[-+]?\d+(\.\d+)?")
 
 
-def _resolve_admin_areas(array, datamart_geo_data):
+def _resolve_admin_areas(array, datamart_geo_data, name=None):
     """(level, areas) for a place-name column, or None if it doesn't look like one.
 
     Like identify_types(): numbers are dropped (they aren't place names; a column of
@@ -470,6 +470,7 @@ def _resolve_admin_areas(array, datamart_geo_data):
     needed, and more than MIN_RESOLVED_SHARE of them must resolve.
     """
     distinct = sorted({str(v).strip() for v in array} - {"", "nan", "None"})
+    distinct = iso_country_names(distinct, name) or distinct
     distinct = [v for v in distinct if not _NUMBER_RE.fullmatch(v)]
     if len(distinct) < 3:
         return None
@@ -548,7 +549,7 @@ def process_column(
         admin_areas = None
         if label in PLACE_NAME_LABELS and datamart_geo_data is not None and _plausible_place_names(array):
             # A place-name label must be confirmed by the gazetteer.
-            admin_areas = _resolve_admin_areas(array, datamart_geo_data)
+            admin_areas = _resolve_admin_areas(array, datamart_geo_data, column_meta.get("name"))
         implausible = (
             (label in PLACE_NAME_LABELS and not _plausible_place_names(array))
             # Countries, states and boroughs are in datamart-geo, so the gazetteer must

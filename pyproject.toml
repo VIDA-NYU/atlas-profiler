@@ -30,6 +30,7 @@ dependencies = [
   "scikit-learn",
   "torch",
   "transformers",
+    "pycountry",  # Auctus fixes: ISO country codes -> country names
 ]
 
 [project.optional-dependencies]

@@ -73,6 +73,43 @@ NA_TOKENS = frozenset({"#N/A", "#N/A N/A", "#NA", "-1.#IND", "-1.#QNAN", "-NaN",
 
 # Integer columns with few small values (survey scales, Likert items) are also categorical.
 MAX_CODED_CATEGORIES = 12
+# Short labels repeated this many times on average are categories even when there are
+# more of them than MAX_CATEGORICAL_RATIO allows (e.g. 140 tags over 760 rows).
+MIN_AVG_REPEATS = 3
+MAX_REPEATED_LABELS = 500
+MAX_LABEL_CHARS = 60
+# Names of counts and summed scores: small integers there are quantities, not codes.
+_COUNT_NAME = re.compile(r"count|total|score|(^|[^a-z])(num|nb|n|number|qty)([^a-z]|$)", re.IGNORECASE)
+# Column names that make 2/3-letter codes ISO country codes (not US states or currencies).
+_COUNTRY_NAME = re.compile(r"countr|nation|iso|ctry|cntry", re.IGNORECASE)
+
+
+def iso_country_names(values, name):
+    """Country names for a column of ISO 3166 alpha-2/alpha-3 codes, or None.
+
+    Only when the column name says country and >= 80% of the values are codes:
+    "CA" is also California and "CAD" a currency.
+    """
+    if not _COUNTRY_NAME.search(name or ""):
+        return None
+    try:
+        import pycountry
+    except ImportError:
+        return None
+    out, hits = [], 0
+    for value in values:
+        code = str(value).strip().upper()
+        country = None
+        if re.fullmatch(r"[A-Z]{2}", code):
+            country = pycountry.countries.get(alpha_2=code)
+        elif re.fullmatch(r"[A-Z]{3}", code):
+            country = pycountry.countries.get(alpha_3=code)
+        if country is not None:
+            hits += 1
+            out.append(getattr(country, "common_name", None) or country.name)
+        else:
+            out.append(str(value))
+    return out if values and hits >= 0.8 * len(values) else None
 _INTEGER_ID_TOKENS = {"id", "ids", "identifier", "idx"}
 
 
@@ -318,7 +355,8 @@ def identify_types(array, name, datamart_geo_data, manual=None):
 
             # Administrative areas
             if datamart_geo_data is not None and len(distinct_values) >= 3:
-                admin_areas = datamart_geo_data.resolve_names_all(distinct_values)
+                admin_areas = datamart_geo_data.resolve_names_all(
+                    iso_country_names(list(distinct_values), name) or distinct_values)
                 admin_areas = [r for r in admin_areas if r]
                 if len(admin_areas) > 0.7 * len(distinct_values):
 
@@ -332,18 +370,26 @@ def identify_types(array, name, datamart_geo_data, manual=None):
                 1,
                 (1.0 - TEXT_WORDS_THRESHOLD) * (num_total - re_count["empty"]),
             )
+            # Labels: few distinct values (multi-word ones too, e.g. "Strongly agree"),
+            # or short values each repeated several times (tags, categories).
+            max_categorical = MAX_CATEGORICAL_RATIO * (len(array) - num_empty)
+            n_distinct = len(distinct_values)
+            labels = n_distinct <= max_categorical or (
+                0 < n_distinct <= MAX_REPEATED_LABELS
+                and num_present >= MIN_AVG_REPEATS * n_distinct
+                and sorted(len(str(v)) for v in distinct_values)[n_distinct // 2] <= MAX_LABEL_CHARS
+            )
             if types.ID in semantic_types_dict:
                 column_meta["num_distinct_values"] = len(distinct_values)
-            elif not categorical and num_text >= text_threshold:
+            elif not categorical and not labels and num_text >= text_threshold:
                 # Free text
                 semantic_types_dict[types.TEXT] = None
             else:
                 # Count distinct values
                 column_meta["num_distinct_values"] = len(distinct_values)
-                max_categorical = MAX_CATEGORICAL_RATIO * (len(array) - num_empty)
                 if (
                     categorical
-                    or len(distinct_values) <= max_categorical
+                    or labels
                     or types.BOOLEAN in semantic_types_dict
                 ):
                     semantic_types_dict[types.CATEGORICAL] = distinct_values
@@ -359,12 +405,16 @@ def identify_types(array, name, datamart_geo_data, manual=None):
             # Count distinct values
             column_meta["num_distinct_values"] = len(distinct_values)
 
-            # Coded categories: a handful of small integers (0-10 scales, 1-5 codes)
+            # Coded categories: a handful of small integers (0-10 scales, 1-5 codes,
+            # REDCap status codes {0, 2}), but not 0/1 flags (boolean) and not
+            # counts or scores named as such.
             small = [to_number(v) for v in distinct_values]
             if (
                 num_present >= MIN_ROWS_FOR_IDS
-                and 2 < len(distinct_values) <= MAX_CODED_CATEGORIES
+                and 1 <= len(distinct_values) <= MAX_CODED_CATEGORIES
                 and all(v is not None and 0 <= v <= MAX_CODED_CATEGORIES for v in small)
+                and (len(distinct_values) > 2 or not set(small) <= {0, 1})
+                and not _COUNT_NAME.search(name or "")
                 and types.ID not in semantic_types_dict
             ):
                 semantic_types_dict[types.CATEGORICAL] = distinct_values

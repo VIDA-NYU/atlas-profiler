@@ -127,3 +127,40 @@ def test_integer_ids_need_an_id_token_in_the_name():
         assert not _id_name_tokens(name), name
     assert types.ID not in _types(list(range(1, 200)), name="identify_issues")[1]
     assert types.ID in _types(list(range(1, 200)), name="patient_id")[1]
+
+
+def test_low_cardinality_multiword_labels_are_categorical():
+    answers = ["Strongly agree", "Somewhat agree", "Neither agree nor disagree", "Disagree"] * 50
+    assert types.CATEGORICAL in _types(answers)[1]
+    assert types.TEXT not in _types(answers)[1]
+
+
+def test_repeated_short_tags_are_categorical():
+    tags = [f"Group{i % 20}.tag{i % 140}" for i in range(760)]  # 140 tags, ~5 uses each
+    assert types.CATEGORICAL in _types(tags, name="tag")[1]
+
+
+def test_free_text_stays_text():
+    sentences = [f"The participant said thing number {i} about the program today" for i in range(200)]
+    semantic = _types(sentences, name="comment")[1]
+    assert types.TEXT in semantic and types.CATEGORICAL not in semantic
+
+
+def test_one_or_two_value_codes_are_categorical_but_flags_are_not():
+    assert types.CATEGORICAL in _types(["0", "2"] * 50, name="survey1_complete")[1]   # REDCap status
+    assert types.CATEGORICAL in _types(["1", "2"] * 50, name="control")[1]
+    assert types.CATEGORICAL not in _types(["0", "1"] * 50, name="flag")[1]           # boolean
+
+
+def test_counts_and_scores_are_not_coded_categories():
+    for name in ("num_child", "hhaidtotal", "fiesscore", "pbqscore0", "n_visits"):
+        assert types.CATEGORICAL not in _types([str(i % 6) for i in range(100)], name=name)[1], name
+    assert types.CATEGORICAL in _types([str(i % 6) for i in range(100)], name="marital")[1]
+
+
+def test_iso_country_codes_need_a_country_name():
+    from profiler.profile_types import iso_country_names
+    names = iso_country_names(["CN", "US", "TR", "NL", "XX"], "Country")
+    assert names[:2] == ["China", "United States"] and names[-1] == "XX"
+    assert iso_country_names(["CA", "NY", "TX"], "state") is None        # US states
+    assert iso_country_names(["EUR", "CAD", "USD"], "Currency") is None  # currencies
