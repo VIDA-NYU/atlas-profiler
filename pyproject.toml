@@ -32,6 +32,9 @@ dependencies = [
   "transformers",
 ]
 
+[project.scripts]
+atlas-profiler-report = "profiler.report:main"
+
 [project.optional-dependencies]
 docs = [
     "sphinx>=4.0",

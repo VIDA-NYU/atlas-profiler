@@ -50,6 +50,7 @@ Prefer a path for large files: the profiler streams a CSV/TSV path with polars, 
 
 - **[Complete Documentation](https://atlas-profiler.readthedocs.io/en/latest/)**: guides, API reference, examples and configuration.
 - **[How the profiler changed](docs/profiler-changes.md)**: sampling, speed, histograms, and spatial and temporal coverage, before and after, with images.
+- **[HTML report](docs/report.md)**: turn a profile into a standalone report drawn with Autark, with the columns, their distributions and maps of the spatial coverage.
 
 ## Table of Contents
 
