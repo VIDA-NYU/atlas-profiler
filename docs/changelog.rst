@@ -4,6 +4,7 @@ Changelog
 Version 0.1.0
 -------------
 
+- New HTML report of a profile, drawn with Autark (``profiler.report``, ``atlas-profiler-report``); see :doc:`report`
 - CSV paths are sampled at random across the file, not from its first rows; the sample size adapts to the table (``profiled_rows``)
 - ``computed_on`` records which parts of a profile come from the sample and which from every row
 - Fast temporal min/max with polars, checked against the exact parser; support for polars 2

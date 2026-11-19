@@ -90,6 +90,7 @@ When ``geo_classifier=True``, Atlas Profiler creates a ``HybridGeoClassifier(Geo
    installation
    examples
    profiler-changes
+   report
    api
    changelog
 

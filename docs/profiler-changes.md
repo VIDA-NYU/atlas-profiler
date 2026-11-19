@@ -2,7 +2,7 @@
 
 This page compares how Atlas Profiler worked before these changes (the `main` branch at `b449447`) with how it works now. Everything below was measured on the 2013 NYC taxi trip records released under a FOIL request (January: 14,776,615 trips in a 2.3 GB CSV) and on a 100,000-trip random sample of that file.
 
-The images are sections of the HTML profile report (`profiler.report`, documented in `docs/report.md` on the report branch). The report draws each profile as it is, so the **before** and **after** images are the same file profiled by the old code and by the new code.
+The images are sections of the HTML profile report (`profiler.report`, documented in [report.md](report.md)). The report draws each profile as it is, so the **before** and **after** images are the same file profiled by the old code and by the new code.
 
 ## At a glance
 
