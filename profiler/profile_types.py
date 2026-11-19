@@ -66,12 +66,25 @@ MAX_UNCLEAN = 0.02  # 2%
 # Free text is multiple words
 # At least 50% of it needs to have at least 4 words
 TEXT_WORDS = 4
+# Hashed or opaque identifiers: one token of hex digits, or of letters and digits mixed, all the same length.
+_re_hex_token = re.compile(r"^[0-9A-Fa-f]{12,}$")
+_re_opaque_token = re.compile(r"^(?=[A-Za-z0-9]*[0-9])(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{10,}$")
+MIN_ID_DISTINCT = 20
 TEXT_WORDS_THRESHOLD = 0.5  # 50%
 
 
 # Maximum number of different values for categorical columns
 MAX_CATEGORICAL_RATIO = 0.10  # 10%
 
+
+
+def _looks_like_hashed_ids(distinct_values):
+    """Many distinct values that are all single same-length tokens of hex digits, or of mixed letters and
+    digits: hashed or opaque identifiers (a medallion or license hash), not categories or free text."""
+    values = [str(v).strip() for v in distinct_values if str(v).strip()]
+    if len(values) < MIN_ID_DISTINCT or len({len(v) for v in values}) != 1:
+        return False
+    return all(_re_hex_token.match(v) for v in values) or all(_re_opaque_token.match(v) for v in values)
 
 def regular_exp_count(array):
     """Count instances matching the structure of each data type, using regexes."""
@@ -284,6 +297,8 @@ def identify_types(array, name, datamart_geo_data, manual=None):
                     or types.BOOLEAN in semantic_types_dict
                 ):
                     semantic_types_dict[types.CATEGORICAL] = distinct_values
+                elif _looks_like_hashed_ids(distinct_values):
+                    semantic_types_dict[types.ID] = None
         elif structural_type == types.INTEGER:
             # Identify ids
             # TODO: is this enough?
