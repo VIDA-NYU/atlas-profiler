@@ -198,3 +198,18 @@ def test_row_count_of_a_header_only_file(tmp_path):
     path = tmp_path / "empty.csv"
     path.write_text("a,b\n")
     assert process_dataset(str(path), geo_classifier=False)["nb_rows"] == 0
+
+
+def test_full_statistics_read_numbers_like_the_profile(tmp_path):
+    prices = [f"${1000 + i:,}.50" for i in range(300)] + ["NULL"] * 20
+    for as_csv in (True, False):
+        data = pandas.DataFrame({"price": prices})
+        if as_csv:
+            path = tmp_path / "prices.csv"
+            data.to_csv(path, index=False)
+            data = str(path)
+        meta = process_dataset(data, geo_classifier=False, plots=True, full_statistics=True)
+        plot = meta["columns"][0]["plot"]
+        assert plot["type"] == "histogram_numerical" and plot["computed_on"] == "all_rows", as_csv
+        counted = sum(b["count"] for b in plot["data"]) + plot.get("below", 0) + plot.get("above", 0)
+        assert counted == 300, as_csv  # every price, no NULL

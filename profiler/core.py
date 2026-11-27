@@ -1695,12 +1695,12 @@ def _all_numbers(name, csv_path, csv_sep, frame):
     if csv_path is not None:
         import polars as pl
 
-        value = pl.col(name).str.strip_chars()
-        number = pl.when(value == "").then(None).otherwise(value).cast(pl.Float64, strict=False)
+        # read as the full-file statistics read them: formatted numbers count, NULL / n/a don't
+        number = _numbers(pl, _present(pl, name))
         values = _collect_streaming(_scan_csv(pl, csv_path, csv_sep).select(number.alias("v")).drop_nulls())
         values = values["v"].to_numpy()
     elif frame is not None and name in frame.columns:
-        values = pandas.to_numeric(frame[name], errors="coerce").dropna().to_numpy(dtype="float64")
+        values = frame[name].map(to_number).dropna().to_numpy(dtype="float64")
     else:
         return None
     return values[numpy.abs(values) < 3.4e38]  # as the sample histogram does
