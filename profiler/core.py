@@ -11,7 +11,7 @@ import re
 import warnings
 
 from .numerical import mean_stddev, get_numerical_ranges
-from .profile_types import identify_types, determine_dataset_type
+from .profile_types import NA_TOKENS, identify_types, determine_dataset_type, to_number
 from .spatial import (
     LatLongColumn,
     Geohasher,
@@ -22,6 +22,7 @@ from .spatial import (
     SPATIAL_RANGE_DELTA_LONG,
     parse_wkt_column,
     HybridGeoClassifier,
+    disambiguate_admin_areas,
 )
 from .temporal import get_temporal_resolution, parse_date
 from .warning_tools import ignore_warnings
@@ -190,11 +191,20 @@ def _polars_to_pandas(frame):
     return pandas.DataFrame(frame.to_dict(as_series=False))
 
 
+def _present(pl, column):
+    """A column's stripped values, with empty and written-out missing values (NULL, n/a) as null"""
+    value = pl.col(column).str.strip_chars()
+    return pl.when(value.is_null() | (value == "") | value.is_in(list(NA_TOKENS))).then(None).otherwise(value)
+
+
 def _csv_column_stats(pl, path, sep, column):
     scan = _scan_csv(pl, path, sep)
-    value = pl.col(column).str.strip_chars()
-    value = pl.when(value.is_null() | (value == "")).then(None).otherwise(value)
-    numeric = value.cast(pl.Float64, strict=False)
+    value = _present(pl, column)
+    # Formatted numbers ($1,234.50, 12%) count as numbers; thousands commas are only stripped from
+    # values with 3-digit groups, so a decimal comma isn't misread.
+    formatted = value.str.contains(r"^[+-]?[$€£]?\s?[0-9]{1,3}(,[0-9]{3})+(\.[0-9]+)?\s?%?$")
+    cleaned = pl.when(formatted).then(value.str.replace_all(",", "")).otherwise(value)
+    numeric = cleaned.str.replace_all(r"^([+-]?)[$€£]\s?|\s?%$", "$1").cast(pl.Float64, strict=False)
     # The same numbers as the sample (process_column): finite and inside float32 range
     numeric = pl.when(numeric.is_finite() & (numeric.abs() < 3.4e38)).then(numeric)
 
@@ -257,13 +267,25 @@ def _exact_small_distinct_counts(pl, path, sep, full_data_stats):
         return
     exprs = []
     for column in small:
-        value = pl.col(column).str.strip_chars()
-        value = pl.when(value.is_null() | (value == "")).then(None).otherwise(value)
+        value = _present(pl, column)
         exprs.append(value.drop_nulls().n_unique().alias(column))
     exact = _collect_streaming(_scan_csv(pl, path, sep).select(exprs)).row(0, named=True)
     for column in small:
         full_data_stats[column]["num_distinct_values"] = int(exact[column])
         full_data_stats[column]["num_distinct_values_is_approximate"] = False
+
+
+def _sniff_separator(path):
+    """Delimiter from the first 64 KiB (, ; tab |); by extension if that fails"""
+    import csv
+
+    default = "\t" if path.lower().endswith((".tsv", ".tab")) else ","
+    with open(path, encoding="utf-8", errors="replace", newline="") as fh:
+        head = fh.read(64 * 1024)
+    try:
+        return csv.Sniffer().sniff(head, delimiters=",;\t|").delimiter
+    except csv.Error:
+        return default
 
 
 def _load_csv_path(data, load_max_size, delimiter=None):
@@ -282,7 +304,7 @@ def _load_csv_path(data, load_max_size, delimiter=None):
     metadata["_csv_path"] = path
     logger.info("File size: %r bytes", metadata["size"])
 
-    sep = delimiter or ("\t" if path.lower().endswith((".tsv", ".tab")) else ",")
+    sep = delimiter or _sniff_separator(path)
     metadata["_csv_sep"] = sep
     scan = _scan_csv(pl, path, sep)
     try:
@@ -589,6 +611,96 @@ def load_data(data, load_max_size=None, indexes=True, delimiter=None):
     return data, metadata, data.columns, full_data_stats
 
 
+# Geo-classifier labels that mean "this column holds place names". Code-like labels (zip5,
+# borough_code, ...) legitimately hold numbers and aren't checked here.
+PLACE_NAME_LABELS = {"borough", "city", "state", "country"}
+# Labels whose places are all in datamart-geo, so the gazetteer must confirm them
+GAZETTEER_LABELS = {"country", "state", "borough"}
+MIN_RESOLVED_SHARE = 0.7  # as in identify_types()
+_YES_NO = {"yes", "no", "y", "n", "true", "false", "t", "f"}
+_NUMBER_RE = re.compile(r"[-+]?\d+(\.\d+)?")
+
+
+def _place_values(array):
+    return [str(v).strip() for v in array if str(v).strip() not in ("", "nan", "None")]
+
+
+def _plausible_place_names(array):
+    """False when values can't be place names: mostly numbers, yes/no, or <= 2 distinct.
+
+    The geo-classifier labels such columns as places (0/1 flags, survey codes, rates), which then
+    turn into wrong admin areas and map boxes.
+    """
+    distinct = set(_place_values(array))
+    if len(distinct) <= 2:
+        return False
+    lowered = {v.lower() for v in distinct}
+    if len(lowered & _YES_NO) == len(lowered):
+        return False
+    numeric = sum(1 for v in distinct if _NUMBER_RE.fullmatch(v))
+    return numeric <= len(distinct) / 2
+
+
+def _resolve_admin_areas(array, datamart_geo_data):
+    """(level, areas) for a place-name column, or None if it doesn't look like one.
+
+    As in identify_types(): numbers are dropped (a column of row numbers once resolved to provinces
+    of Iran), at least 3 distinct names are needed, and more than MIN_RESOLVED_SHARE must resolve.
+    """
+    distinct = sorted(v for v in set(_place_values(array)) if not _NUMBER_RE.fullmatch(v))
+    if len(distinct) < 3:
+        return None
+    resolved = [r for r in datamart_geo_data.resolve_names_all(distinct) if r]
+    if len(resolved) <= MIN_RESOLVED_SHARE * len(distinct):
+        return None
+    return disambiguate_admin_areas(resolved)
+
+
+def _short_names(array, max_words=4):
+    """Values that read like names: mostly at most ``max_words`` words, no commas"""
+    values = _place_values(array)
+    if not values:
+        return False
+    namelike = sum(1 for v in values if "," not in v and len(v.split()) <= max_words)
+    return namelike >= 0.9 * len(values)
+
+
+CODE_LABELS = {"zip5", "zip9", "borough_code", "state_code"}
+_US_STATE_CODES = set(
+    "AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND "
+    "OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY PR GU VI AS MP".split()
+)
+_BOROUGH_CODES = {"1", "2", "3", "4", "5", "MN", "BX", "BK", "QN", "SI"}
+
+
+def _plausible_codes(label, array, name):
+    """Whether a column labelled as a geographic code holds such codes
+
+    The geo-classifier labels survey answers (A-E, 1-5 scales) and row numbers as borough or state
+    codes.
+    """
+    values = _place_values(array)
+    if not values:
+        return False
+    distinct = set(values)
+    if label in ("zip5", "zip9"):
+        return sum(1 for v in values if re.fullmatch(r"\d{5}(-?\d{4})?", v)) >= 0.8 * len(values)
+    if label == "borough_code":
+        upper = {v.upper() for v in distinct}
+        if not upper <= _BOROUGH_CODES or len(distinct) < 2:
+            return False
+        # 1-5 is also every survey scale: numeric codes need a borough-like column name
+        return not upper <= {"1", "2", "3", "4", "5"} or bool(re.search(r"boro", name or "", re.IGNORECASE))
+    if label == "state_code":
+        if {v.upper() for v in distinct} <= _US_STATE_CODES:
+            return len(distinct) >= 2
+        # FIPS numbers are only believable when the column name says so
+        return bool(re.search(r"state|fips", name or "", re.IGNORECASE)) and all(
+            v.isdigit() and 1 <= int(v) <= 78 for v in distinct
+        )
+    return True
+
+
 def process_column(
     array,
     column_meta,
@@ -608,11 +720,33 @@ def process_column(
     # Use pre-computed geo_prediction if available and no manual override
     if geo_prediction is not None and manual is None:
         label = geo_prediction["label"]
-        if label in GEO_CLASSIFIER_SPATIAL_MAP:
+        admin_areas = None
+        place_names = label in PLACE_NAME_LABELS and _plausible_place_names(array)
+        if place_names and datamart_geo_data is not None:
+            admin_areas = _resolve_admin_areas(array, datamart_geo_data)
+        implausible = (
+            (label in PLACE_NAME_LABELS and not place_names)
+            # countries, states and boroughs are in datamart-geo, so it must confirm them; many cities
+            # aren't, so city labels only need short name-like values
+            or (label in GAZETTEER_LABELS and datamart_geo_data is not None and admin_areas is None)
+            or (label == "city" and not _short_names(array))
+            or (label in CODE_LABELS and not _plausible_codes(label, array, column_meta.get("name")))
+        )
+        if implausible:
+            logger.info(
+                "Ignoring geo_classifier label %s for column %r: its values don't fit it",
+                label,
+                column_meta.get("name"),
+            )
+        elif label in GEO_CLASSIFIER_SPATIAL_MAP:
             # Geo classifier identified a spatial type
             used_geo_prediction = True
             structural_type, semantic_list = GEO_CLASSIFIER_SPATIAL_MAP[label]
             semantic_types_dict = {st: None for st in semantic_list}
+            if types.ADMIN in semantic_types_dict and admin_areas is not None:
+                # identify_types() is skipped on this path, and with it the datamart-geo
+                # resolution that gives admin areas their coverage
+                semantic_types_dict[types.ADMIN] = admin_areas
             additional_meta["geo_classifier"] = {
                 "label": label,
                 "confidence": geo_prediction["confidence"],
@@ -669,13 +803,9 @@ def process_column(
         # Get numerical values needed for either ranges or plot
         numerical_values = []
         for e in array:
-            try:
-                e = float(e)
-            except ValueError:
-                pass
-            else:
-                if -3.4e38 < e < 3.4e38:  # Overflows in ES
-                    numerical_values.append(e)
+            e = to_number(e)  # also $1,234.50 and 12%
+            if e is not None and -3.4e38 < e < 3.4e38:  # Overflows in ES
+                numerical_values.append(e)
 
         # Compute ranges from numerical values
         if coverage:
