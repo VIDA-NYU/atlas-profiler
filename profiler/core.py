@@ -211,12 +211,17 @@ def _numbers(pl, value):
 
 
 def _csv_columns_stats(pl, path, sep, columns):
-    """Full-file statistics of every column, CSV_STATS_BATCH columns per pass over the file
+    """Row count and full-file statistics of every column, CSV_STATS_BATCH columns per pass over the file
 
     Each column's cleaned values and numbers are computed once and then aggregated (an expression
-    reused in several aggregations is evaluated once per aggregation).
+    reused in several aggregations is evaluated once per aggregation). The row count comes with the
+    first pass.
+
+    Returns:
+        (nb_rows, {column: statistics})
     """
     out = {}
+    nb_rows = None
     for first in range(0, len(columns), CSV_STATS_BATCH):
         batch = columns[first : first + CSV_STATS_BATCH]
         values = _scan_csv(pl, path, sep).select(
@@ -227,7 +232,7 @@ def _csv_columns_stats(pl, path, sep, columns):
             number = _numbers(pl, pl.col(f"v{i}"))
             # The same numbers as the sample (process_column): finite and inside float32 range
             numbers.append(pl.when(number.is_finite() & (number.abs() < 3.4e38)).then(number).alias(f"n{i}"))
-        aggregations = []
+        aggregations = [pl.len().alias("rows")]
         for i in range(len(batch)):
             value, number = pl.col(f"v{i}"), pl.col(f"n{i}")
             aggregations += [
@@ -240,10 +245,13 @@ def _csv_columns_stats(pl, path, sep, columns):
                 value.drop_nulls().head(CSV_SAMPLE_ROWS).implode().alias(f"{i}:sample_values"),
             ]
         row = _collect_streaming(values.with_columns(numbers).select(aggregations)).row(0, named=True)
+        nb_rows = int(row.pop("rows"))
         for i, column in enumerate(batch):
             stats = {key.split(":", 1)[1]: v for key, v in row.items() if key.split(":", 1)[0] == str(i)}
             out[column] = _finish_column_stats(stats)
-    return out
+    if nb_rows is None:  # no columns
+        nb_rows = int(_collect_streaming(_scan_csv(pl, path, sep).select(pl.len())).item())
+    return nb_rows, out
 
 
 def _finish_column_stats(stats):
@@ -332,11 +340,7 @@ def _load_csv_path(data, load_max_size, delimiter=None):
         column_names = scan.collect_schema().names()
     except pl.exceptions.NoDataError as exc:  # an empty file: same result as an empty file object
         raise EmptyDataError("empty CSV") from exc
-    metadata["nb_rows"] = int(
-        _collect_streaming(scan.select(pl.len().alias("rows"))).item()
-    )
-
-    full_data_stats = _csv_columns_stats(pl, path, sep, column_names)
+    metadata["nb_rows"], full_data_stats = _csv_columns_stats(pl, path, sep, column_names)
     _exact_small_distinct_counts(pl, path, sep, full_data_stats)
 
     nrows = None

@@ -176,3 +176,25 @@ def test_iso_codes_are_geocoded_as_countries(monkeypatch):
     process_column(["CN", "US", "KE"] * 10, meta, plots=False, datamart_geo_data=FakeGeo(),
                    geo_prediction={"label": "country", "confidence": 0.9})
     assert types.ADMIN in meta["semantic_types"]
+
+
+# --- full-file statistics -----------------------------------------------------------
+
+
+def test_full_file_statistics_across_batches(tmp_path):
+    # wider than one pass (CSV_STATS_BATCH columns): every column still gets its own statistics
+    width = core.CSV_STATS_BATCH + 6
+    path = tmp_path / "wide.csv"
+    rows = [",".join(f"c{j}" for j in range(width))]
+    rows += [",".join(str(i * (j + 1)) for j in range(width)) for i in range(40)]
+    path.write_text("\n".join(rows) + "\n")
+    meta = process_dataset(str(path), geo_classifier=False)
+    assert meta["nb_rows"] == 40 and meta["nb_columns"] == width
+    columns = {c["name"]: c for c in meta["columns"]}
+    assert columns["c0"]["max"] == 39 and columns[f"c{width - 1}"]["max"] == 39 * width
+
+
+def test_row_count_of_a_header_only_file(tmp_path):
+    path = tmp_path / "empty.csv"
+    path.write_text("a,b\n")
+    assert process_dataset(str(path), geo_classifier=False)["nb_rows"] == 0
