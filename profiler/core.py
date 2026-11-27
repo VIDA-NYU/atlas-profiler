@@ -91,6 +91,7 @@ HEADER_CONSISTENT_ROWS = 4
 
 MAX_GEOHASHES = 100
 CSV_SAMPLE_ROWS = 1000
+CSV_STATS_BATCH = 64  # columns aggregated per pass over the file, for the full-file statistics
 CSV_BATCH_ROWS = 50000
 # Distinct counts of CSV columns are approximate (HyperLogLog); below this they are recounted exactly.
 EXACT_DISTINCT_LIMIT = 10000
@@ -194,37 +195,58 @@ def _polars_to_pandas(frame):
 def _present(pl, column):
     """A column's stripped values, with empty and written-out missing values (NULL, n/a) as null"""
     value = pl.col(column).str.strip_chars()
-    return pl.when(value.is_null() | (value == "") | value.is_in(list(NA_TOKENS))).then(None).otherwise(value)
+    missing = value.is_null() | (value == "") | value.is_in(pl.Series(sorted(NA_TOKENS)).implode())
+    return pl.when(missing).then(None).otherwise(value)
 
 
-def _csv_column_stats(pl, path, sep, column):
-    scan = _scan_csv(pl, path, sep)
-    value = _present(pl, column)
-    # Formatted numbers ($1,234.50, 12%) count as numbers; thousands commas are only stripped from
-    # values with 3-digit groups, so a decimal comma isn't misread.
+def _numbers(pl, value):
+    """Values as floats: plain numbers, and formatted ones ($1,234.50, 12%). Thousands commas are only
+    stripped from values with 3-digit groups, so a decimal comma isn't misread."""
     formatted = value.str.contains(r"^[+-]?[$€£]?\s?[0-9]{1,3}(,[0-9]{3})+(\.[0-9]+)?\s?%?$")
     cleaned = pl.when(formatted).then(value.str.replace_all(",", "")).otherwise(value)
-    numeric = cleaned.str.replace_all(r"^([+-]?)[$€£]\s?|\s?%$", "$1").cast(pl.Float64, strict=False)
-    # The same numbers as the sample (process_column): finite and inside float32 range
-    numeric = pl.when(numeric.is_finite() & (numeric.abs() < 3.4e38)).then(numeric)
+    return pl.coalesce(
+        value.cast(pl.Float64, strict=False),
+        cleaned.str.replace_all(r"^([+-]?)[$€£]\s?|\s?%$", "$1").cast(pl.Float64, strict=False),
+    )
 
-    stats = _collect_streaming(
-        scan.select(
-            value.filter(value.is_not_null())
-            .approx_n_unique()
-            .alias("num_distinct_values"),
-            numeric.count().alias("num_numeric_values"),
-            numeric.min().alias("min"),
-            numeric.max().alias("max"),
-            numeric.mean().alias("mean"),
-            numeric.std(ddof=0).alias("stddev"),
-            value.filter(value.is_not_null())
-            .head(CSV_SAMPLE_ROWS)
-            .implode()
-            .alias("sample_values"),
+
+def _csv_columns_stats(pl, path, sep, columns):
+    """Full-file statistics of every column, CSV_STATS_BATCH columns per pass over the file
+
+    Each column's cleaned values and numbers are computed once and then aggregated (an expression
+    reused in several aggregations is evaluated once per aggregation).
+    """
+    out = {}
+    for first in range(0, len(columns), CSV_STATS_BATCH):
+        batch = columns[first : first + CSV_STATS_BATCH]
+        values = _scan_csv(pl, path, sep).select(
+            [_present(pl, column).alias(f"v{i}") for i, column in enumerate(batch)]
         )
-    ).row(0, named=True)
+        numbers = []
+        for i in range(len(batch)):
+            number = _numbers(pl, pl.col(f"v{i}"))
+            # The same numbers as the sample (process_column): finite and inside float32 range
+            numbers.append(pl.when(number.is_finite() & (number.abs() < 3.4e38)).then(number).alias(f"n{i}"))
+        aggregations = []
+        for i in range(len(batch)):
+            value, number = pl.col(f"v{i}"), pl.col(f"n{i}")
+            aggregations += [
+                value.drop_nulls().approx_n_unique().alias(f"{i}:num_distinct_values"),
+                number.count().alias(f"{i}:num_numeric_values"),
+                number.min().alias(f"{i}:min"),
+                number.max().alias(f"{i}:max"),
+                number.mean().alias(f"{i}:mean"),
+                number.std(ddof=0).alias(f"{i}:stddev"),
+                value.drop_nulls().head(CSV_SAMPLE_ROWS).implode().alias(f"{i}:sample_values"),
+            ]
+        row = _collect_streaming(values.with_columns(numbers).select(aggregations)).row(0, named=True)
+        for i, column in enumerate(batch):
+            stats = {key.split(":", 1)[1]: v for key, v in row.items() if key.split(":", 1)[0] == str(i)}
+            out[column] = _finish_column_stats(stats)
+    return out
 
+
+def _finish_column_stats(stats):
     sample_values = []
     seen = set()
     for item in stats["sample_values"] or []:
@@ -234,7 +256,6 @@ def _csv_column_stats(pl, path, sep, column):
             sample_values.append(item)
             if len(sample_values) == 3:
                 break
-
     stats["num_distinct_values"] = int(stats["num_distinct_values"] or 0)
     stats["num_distinct_values_is_approximate"] = True
     stats["sample_values"] = sample_values
@@ -315,9 +336,7 @@ def _load_csv_path(data, load_max_size, delimiter=None):
         _collect_streaming(scan.select(pl.len().alias("rows"))).item()
     )
 
-    full_data_stats = {
-        column: _csv_column_stats(pl, path, sep, column) for column in column_names
-    }
+    full_data_stats = _csv_columns_stats(pl, path, sep, column_names)
     _exact_small_distinct_counts(pl, path, sep, full_data_stats)
 
     nrows = None
