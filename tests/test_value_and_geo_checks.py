@@ -6,7 +6,7 @@ import pandas
 from atlas_profiler import process_dataset
 from profiler import core, types
 from profiler.core import _plausible_codes, _plausible_place_names, _resolve_admin_areas, _short_names, process_column
-from profiler.profile_types import identify_types, to_number
+from profiler.profile_types import identify_types, iso_country_names, to_number
 
 
 def _types(values, name="col"):
@@ -157,3 +157,22 @@ def test_classifier_labelled_places_are_geocoded(monkeypatch):
                               geo_prediction={"label": "country", "confidence": 0.9})
     assert types.ADMIN in meta["semantic_types"] and meta["admin_area_level"] == 0
     assert sorted(a.name for a in resolved["admin_areas"]) == ["Kenya", "Rwanda", "Uganda"]
+
+
+def test_iso_country_codes_need_a_country_name():
+    names = iso_country_names(["CN", "US", "TR", "NL", "XX"], "Country")
+    assert names[:2] == ["China", "United States"] and names[-1] == "XX"
+    assert iso_country_names(["CA", "NY", "TX"], "state") is None  # US states
+    assert iso_country_names(["EUR", "CAD", "USD"], "Currency") is None  # currencies
+    assert iso_country_names(["CN", "US", "Kenya", "Peru", "Chile"], "Country") is None  # mostly names
+
+
+def test_iso_codes_are_geocoded_as_countries(monkeypatch):
+    monkeypatch.setattr(core, "disambiguate_admin_areas", lambda resolved: (0, [r[0] for r in resolved]))
+    geo = FakeGeo()
+    level, areas = _resolve_admin_areas(pandas.Series(["CN", "US", "KE", "US"]), geo, "Country")
+    assert geo.asked == ["China", "Kenya", "United States"]
+    meta = {"name": "country_code"}
+    process_column(["CN", "US", "KE"] * 10, meta, plots=False, datamart_geo_data=FakeGeo(),
+                   geo_prediction={"label": "country", "confidence": 0.9})
+    assert types.ADMIN in meta["semantic_types"]

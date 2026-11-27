@@ -26,6 +26,7 @@ dependencies = [
   "numpy",
   "pandas",
   "polars>=1.44",  # tested with 1.44 and 2.1
+  "pycountry",  # ISO country codes -> names before geocoding
   "requests",
   "scikit-learn",
   "torch",

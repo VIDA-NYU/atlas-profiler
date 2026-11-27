@@ -11,7 +11,7 @@ import re
 import warnings
 
 from .numerical import mean_stddev, get_numerical_ranges
-from .profile_types import NA_TOKENS, identify_types, determine_dataset_type, to_number
+from .profile_types import NA_TOKENS, identify_types, determine_dataset_type, iso_country_names, to_number
 from .spatial import (
     LatLongColumn,
     Geohasher,
@@ -641,13 +641,15 @@ def _plausible_place_names(array):
     return numeric <= len(distinct) / 2
 
 
-def _resolve_admin_areas(array, datamart_geo_data):
+def _resolve_admin_areas(array, datamart_geo_data, name=None):
     """(level, areas) for a place-name column, or None if it doesn't look like one.
 
     As in identify_types(): numbers are dropped (a column of row numbers once resolved to provinces
     of Iran), at least 3 distinct names are needed, and more than MIN_RESOLVED_SHARE must resolve.
     """
-    distinct = sorted(v for v in set(_place_values(array)) if not _NUMBER_RE.fullmatch(v))
+    distinct = sorted(set(_place_values(array)))
+    distinct = iso_country_names(distinct, name) or distinct
+    distinct = [v for v in distinct if not _NUMBER_RE.fullmatch(v)]
     if len(distinct) < 3:
         return None
     resolved = [r for r in datamart_geo_data.resolve_names_all(distinct) if r]
@@ -723,7 +725,7 @@ def process_column(
         admin_areas = None
         place_names = label in PLACE_NAME_LABELS and _plausible_place_names(array)
         if place_names and datamart_geo_data is not None:
-            admin_areas = _resolve_admin_areas(array, datamart_geo_data)
+            admin_areas = _resolve_admin_areas(array, datamart_geo_data, column_meta.get("name"))
         implausible = (
             (label in PLACE_NAME_LABELS and not place_names)
             # countries, states and boroughs are in datamart-geo, so it must confirm them; many cities

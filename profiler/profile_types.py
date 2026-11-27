@@ -85,6 +85,39 @@ MIN_ROWS_FOR_IDS = 20
 MIN_ID_UNIQUENESS = 0.95
 
 
+# Column names that make 2/3-letter codes ISO country codes (not US states or currencies)
+_COUNTRY_NAME = re.compile(r"countr|nation|iso|ctry|cntry", re.IGNORECASE)
+
+
+def iso_country_names(values, name):
+    """Country names for a column of ISO 3166 alpha-2/alpha-3 codes, or None
+
+    Only when the column name says country and at least 80% of the values are codes: "CA" is also
+    California and "CAD" a currency. datamart-geo resolves bare codes to unrelated places ("CN" ->
+    Provincia di Cuneo, "TR" -> Tripura), so they're replaced by names before the lookup.
+    """
+    if not _COUNTRY_NAME.search(name or ""):
+        return None
+    try:
+        import pycountry
+    except ImportError:
+        return None
+    out, hits = [], 0
+    for value in values:
+        code = str(value).strip().upper()
+        country = None
+        if re.fullmatch(r"[A-Z]{2}", code):
+            country = pycountry.countries.get(alpha_2=code)
+        elif re.fullmatch(r"[A-Z]{3}", code):
+            country = pycountry.countries.get(alpha_3=code)
+        if country is not None:
+            hits += 1
+            out.append(getattr(country, "common_name", None) or country.name)
+        else:
+            out.append(str(value))
+    return out if values and hits >= 0.8 * len(values) else None
+
+
 def to_number(value):
     """float for plain or formatted numbers ($1,234.50, 12%), else None."""
     text = str(value).strip()
@@ -327,7 +360,9 @@ def identify_types(array, name, datamart_geo_data, manual=None):
 
             # Administrative areas
             if datamart_geo_data is not None and len(distinct_values) >= 3:
-                admin_areas = datamart_geo_data.resolve_names_all(distinct_values)
+                admin_areas = datamart_geo_data.resolve_names_all(
+                    iso_country_names(list(distinct_values), name) or distinct_values
+                )
                 admin_areas = [r for r in admin_areas if r]
                 if len(admin_areas) > 0.7 * len(distinct_values):
 
