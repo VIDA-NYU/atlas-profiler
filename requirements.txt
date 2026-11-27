@@ -1,5 +1,6 @@
 pandas
-polars
+polars>=1.44
+pycountry
 python-dotenv
 transformers
 torch

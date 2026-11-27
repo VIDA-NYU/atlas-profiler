@@ -57,6 +57,86 @@ _re_latlong_point = re.compile(
     r"^\(" r"-?[0-9]{1,3}\.[0-9]{1,15}" r", ?" r"-?[0-9]{1,3}\.[0-9]{1,15}" r"\)$"
 )
 _re_whitespace = re.compile(r"\s+")
+# Numbers written with a currency sign, thousands separators or a percent sign.
+# Thousands groups must be exactly 3 digits, so a decimal comma ("1,5") never matches.
+_re_formatted_number = re.compile(
+    r"^[+-]?[$€£]?\s?(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?\s?%?$"
+)
+_re_uuid = re.compile(
+    r"^[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}$"
+    r"|^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}$"
+)
+# No spaces, a digit and a letter: pure digit-dash strings are phone numbers or dates.
+_re_code = re.compile(r"^(?=.*[0-9])(?=.*[A-Za-z])[A-Za-z0-9_.:/#-]{3,40}$")
+_re_id_name = re.compile(
+    r"(^|[^a-z])(id|ids|identifier|uuid|guid|key|code|accession|isbn|issn|doi|pmid|orcid)([^a-z]|$)",
+    re.IGNORECASE,
+)
+
+# Written-out missing values (pandas' default na_values): counted as empty, so "NULL" in
+# some rows doesn't turn a numeric column into text.
+NA_TOKENS = frozenset({
+    "#N/A", "#N/A N/A", "#NA", "-1.#IND", "-1.#QNAN", "-NaN", "-nan", "1.#IND", "1.#QNAN", "<NA>",
+    "N/A", "NA", "NULL", "NaN", "None", "n/a", "nan", "null",
+})
+
+# Short labels repeated this many times on average are categories even when there are more of them
+# than MAX_CATEGORICAL_RATIO allows (e.g. 140 tags over 760 rows)
+MIN_AVG_REPEATS = 3
+MAX_REPEATED_LABELS = 500
+MAX_LABEL_CHARS = 60
+
+# Text identifiers: at least this many values, (almost) all distinct
+MIN_ROWS_FOR_IDS = 20
+MIN_ID_UNIQUENESS = 0.95
+
+
+# Column names that make 2/3-letter codes ISO country codes (not US states or currencies)
+_COUNTRY_NAME = re.compile(r"countr|nation|iso|ctry|cntry", re.IGNORECASE)
+
+
+def iso_country_names(values, name):
+    """Country names for a column of ISO 3166 alpha-2/alpha-3 codes, or None
+
+    Only when the column name says country and at least 80% of the values are codes: "CA" is also
+    California and "CAD" a currency. datamart-geo resolves bare codes to unrelated places ("CN" ->
+    Provincia di Cuneo, "TR" -> Tripura), so they're replaced by names before the lookup.
+    """
+    if not _COUNTRY_NAME.search(name or ""):
+        return None
+    try:
+        import pycountry
+    except ImportError:
+        return None
+    out, hits = [], 0
+    for value in values:
+        code = str(value).strip().upper()
+        country = None
+        if re.fullmatch(r"[A-Z]{2}", code):
+            country = pycountry.countries.get(alpha_2=code)
+        elif re.fullmatch(r"[A-Z]{3}", code):
+            country = pycountry.countries.get(alpha_3=code)
+        if country is not None:
+            hits += 1
+            out.append(getattr(country, "common_name", None) or country.name)
+        else:
+            out.append(str(value))
+    return out if values and hits >= 0.8 * len(values) else None
+
+
+def to_number(value):
+    """float for plain or formatted numbers ($1,234.50, 12%), else None."""
+    text = str(value).strip()
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    if _re_formatted_number.match(text):
+        try:
+            return float(re.sub(r"[$€£,%]", "", text).strip())
+        except ValueError:
+            return None
+    return None
 
 
 # Tolerable ratio of unclean data
@@ -66,6 +146,10 @@ MAX_UNCLEAN = 0.02  # 2%
 # Free text is multiple words
 # At least 50% of it needs to have at least 4 words
 TEXT_WORDS = 4
+# Hashed or opaque identifiers: one token of hex digits, or of letters and digits mixed, all the same length.
+_re_hex_token = re.compile(r"^[0-9A-Fa-f]{12,}$")
+_re_opaque_token = re.compile(r"^(?=[A-Za-z0-9]*[0-9])(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{10,}$")
+MIN_ID_DISTINCT = 20
 TEXT_WORDS_THRESHOLD = 0.5  # 50%
 
 
@@ -73,16 +157,27 @@ TEXT_WORDS_THRESHOLD = 0.5  # 50%
 MAX_CATEGORICAL_RATIO = 0.10  # 10%
 
 
+
+def _looks_like_hashed_ids(distinct_values):
+    """Many distinct values that are all single same-length tokens of hex digits, or of mixed letters and
+    digits: hashed or opaque identifiers (a medallion or license hash), not categories or free text."""
+    values = [str(v).strip() for v in distinct_values if str(v).strip()]
+    if len(values) < MIN_ID_DISTINCT or len({len(v) for v in values}) != 1:
+        return False
+    return all(_re_hex_token.match(v) for v in values) or all(_re_opaque_token.match(v) for v in values)
+
 def regular_exp_count(array):
     """Count instances matching the structure of each data type, using regexes."""
     re_count = collections.Counter()
 
     for elem in array:
-        if not elem:
+        if not elem or elem.strip() in NA_TOKENS:
             re_count["empty"] += 1
         elif _re_int.match(elem):
             re_count["int"] += 1
         elif _re_float.match(elem):
+            re_count["float"] += 1
+        elif _re_formatted_number.match(elem):
             re_count["float"] += 1
         elif _re_url.match(elem):
             re_count["url"] += 1
@@ -202,7 +297,8 @@ def identify_types(array, name, datamart_geo_data, manual=None):
     if structural_type != types.MISSING_DATA and re_count["empty"] > 0:
         column_meta["missing_values_ratio"] = re_count["empty"] / num_total
 
-    distinct_values = set(e for e in array if e)
+    distinct_values = set(e for e in array if e and e.strip() not in NA_TOKENS)
+    num_present = num_total - re_count["empty"]
 
     semantic_types_dict = {}
     if manual:
@@ -247,6 +343,19 @@ def identify_types(array, name, datamart_geo_data, manual=None):
         if structural_type == types.TEXT:
             categorical = False
 
+            # Identifiers: (almost) every value unique, and code-like or an id-like name
+            present = [e.strip() for e in array if e and e.strip() not in NA_TOKENS]
+            if (
+                num_present >= MIN_ROWS_FOR_IDS
+                and len(distinct_values) >= MIN_ID_UNIQUENESS * num_present
+                and (
+                    _re_id_name.search(name)
+                    or sum(1 for e in present if _re_uuid.match(e) or _re_code.match(e))
+                    >= 0.9 * len(present)
+                )
+            ):
+                semantic_types_dict[types.ID] = None
+
             # URLs
             if num_url >= threshold:
                 semantic_types_dict[types.URL] = None
@@ -257,7 +366,9 @@ def identify_types(array, name, datamart_geo_data, manual=None):
 
             # Administrative areas
             if datamart_geo_data is not None and len(distinct_values) >= 3:
-                admin_areas = datamart_geo_data.resolve_names_all(distinct_values)
+                admin_areas = datamart_geo_data.resolve_names_all(
+                    iso_country_names(list(distinct_values), name) or distinct_values
+                )
                 admin_areas = [r for r in admin_areas if r]
                 if len(admin_areas) > 0.7 * len(distinct_values):
 
@@ -271,19 +382,31 @@ def identify_types(array, name, datamart_geo_data, manual=None):
                 1,
                 (1.0 - TEXT_WORDS_THRESHOLD) * (num_total - re_count["empty"]),
             )
-            if not categorical and num_text >= text_threshold:
+            # Labels: few distinct values (multi-word ones too, e.g. "Strongly agree"), or short values
+            # each repeated several times (tags, categories)
+            max_categorical = MAX_CATEGORICAL_RATIO * (len(array) - num_empty)
+            n_distinct = len(distinct_values)
+            labels = n_distinct <= max_categorical or (
+                0 < n_distinct <= MAX_REPEATED_LABELS
+                and num_present >= MIN_AVG_REPEATS * n_distinct
+                and sorted(len(str(v)) for v in distinct_values)[n_distinct // 2] <= MAX_LABEL_CHARS
+            )
+            if types.ID in semantic_types_dict:
+                column_meta["num_distinct_values"] = len(distinct_values)
+            elif not categorical and not labels and num_text >= text_threshold:
                 # Free text
                 semantic_types_dict[types.TEXT] = None
             else:
                 # Count distinct values
                 column_meta["num_distinct_values"] = len(distinct_values)
-                max_categorical = MAX_CATEGORICAL_RATIO * (len(array) - num_empty)
                 if (
                     categorical
-                    or len(distinct_values) <= max_categorical
+                    or labels
                     or types.BOOLEAN in semantic_types_dict
                 ):
                     semantic_types_dict[types.CATEGORICAL] = distinct_values
+                elif _looks_like_hashed_ids(distinct_values):
+                    semantic_types_dict[types.ID] = None
         elif structural_type == types.INTEGER:
             # Identify ids
             # TODO: is this enough?

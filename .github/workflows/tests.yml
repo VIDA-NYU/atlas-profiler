@@ -4,13 +4,18 @@ on:
   push:
     branches: ["main", "master"]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
+    name: Python ${{ matrix.python-version }}, polars ${{ matrix.polars }}
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
+        # Both ends of the supported range (pyproject.toml: polars>=1.44)
+        polars: ["1.44.2", "latest"]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,5 +29,43 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install pytest
           python -m pip install -e .
+          if [ "${{ matrix.polars }}" = "latest" ]; then
+            python -m pip install --upgrade polars
+          else
+            python -m pip install "polars==${{ matrix.polars }}"
+          fi
+          python -c "import polars; print('polars', polars.__version__)"
       - name: Run tests
+        # Corpus tests skip unless ATLAS_PROFILER_TEST_DATA_DIR is set (see tests/TEST_PLAN.md)
         run: pytest -q
+
+  benchmark:
+    name: Benchmark column statistics
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+      - name: Generate a wide and a tall CSV
+        run: |
+          python - <<'EOF'
+          import numpy, pandas
+          rng = numpy.random.default_rng(0)
+          wide = pandas.DataFrame({f"c{i}": rng.normal(size=200_000).round(4) for i in range(300)})
+          wide.to_csv("wide.csv", index=False)
+          tall = pandas.DataFrame({f"c{i}": rng.normal(size=5_000_000).round(4) for i in range(14)})
+          tall.to_csv("tall.csv", index=False)
+          EOF
+      - name: Run the benchmark
+        run: |
+          echo "## Wide: 300 columns x 200,000 rows" >> "$GITHUB_STEP_SUMMARY"
+          python benchmarks/csv_column_stats.py wide.csv | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "## Tall: 14 columns x 5,000,000 rows" >> "$GITHUB_STEP_SUMMARY"
+          python benchmarks/csv_column_stats.py tall.csv --groups 1 4 0 | tee -a "$GITHUB_STEP_SUMMARY"

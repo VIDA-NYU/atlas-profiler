@@ -50,7 +50,7 @@ def get_numerical_ranges(values):
     values_array = numpy.array(values).reshape(-1, 1)
     with ignore_warnings(ConvergenceWarning):
         clustering.fit(values_array)
-    logger.info("K-Means clusters: %r", list(clustering.cluster_centers_))
+    logger.debug("K-Means clusters: %r", list(clustering.cluster_centers_))
 
     # Compute confidence intervals for each range
     ranges = []
@@ -75,8 +75,8 @@ def get_numerical_ranges(values):
         )
         sizes.append(len(cluster))
     ranges.sort()
-    logger.info("Ranges: %r", ranges)
-    logger.info("Sizes: %r", sizes)
+    logger.debug("Ranges: %r", ranges)
+    logger.debug("Sizes: %r", sizes)
 
     # Convert to Elasticsearch syntax
     ranges = [{"range": {"gte": float(rg[0]), "lte": float(rg[1])}} for rg in ranges]

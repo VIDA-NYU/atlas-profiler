@@ -32,7 +32,9 @@ def test_csv_path_profiles_full_numeric_stats_before_sampling(tmp_path):
     assert value["min"] == 0.0
     assert value["max"] == 199.0
     assert value["mean"] == pytest.approx(99.5)
-    assert value["num_distinct_values_is_approximate"] is True
+    # 200 distinct values is under EXACT_DISTINCT_LIMIT, so the count is recounted exactly.
+    assert value["num_distinct_values"] == 200
+    assert value["num_distinct_values_is_approximate"] is False
 
     spatial = next(c for c in metadata["spatial_coverage"] if c["type"] == "latlong")
     coordinates = spatial["ranges"][0]["range"]["coordinates"]

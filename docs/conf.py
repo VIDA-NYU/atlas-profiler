@@ -9,7 +9,7 @@
 project = 'Atlas Profiler'
 copyright = '2026, Eden Wu'
 author = 'Eden Wu'
-release = '0.0.2'
+release = '0.1.0'
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
@@ -31,10 +31,15 @@ extensions = [
     'sphinx.ext.imgmath',
     'sphinx.ext.mathjax',
     'sphinx.ext.ifconfig',
+    'myst_parser',  # Markdown pages, such as profiler-changes.md
 ]
+
+# Markdown headings get anchors, so links such as profiler-changes.md#histograms work
+myst_heading_anchors = 3
 
 templates_path = ['_templates']
 exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
+source_suffix = {'.rst': 'restructuredtext', '.md': 'markdown'}
 
 language = 'en'
 
