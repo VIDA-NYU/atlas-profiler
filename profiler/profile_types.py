@@ -80,6 +80,12 @@ NA_TOKENS = frozenset({
     "N/A", "NA", "NULL", "NaN", "None", "n/a", "nan", "null",
 })
 
+# Short labels repeated this many times on average are categories even when there are more of them
+# than MAX_CATEGORICAL_RATIO allows (e.g. 140 tags over 760 rows)
+MIN_AVG_REPEATS = 3
+MAX_REPEATED_LABELS = 500
+MAX_LABEL_CHARS = 60
+
 # Text identifiers: at least this many values, (almost) all distinct
 MIN_ROWS_FOR_IDS = 20
 MIN_ID_UNIQUENESS = 0.95
@@ -376,18 +382,26 @@ def identify_types(array, name, datamart_geo_data, manual=None):
                 1,
                 (1.0 - TEXT_WORDS_THRESHOLD) * (num_total - re_count["empty"]),
             )
+            # Labels: few distinct values (multi-word ones too, e.g. "Strongly agree"), or short values
+            # each repeated several times (tags, categories)
+            max_categorical = MAX_CATEGORICAL_RATIO * (len(array) - num_empty)
+            n_distinct = len(distinct_values)
+            labels = n_distinct <= max_categorical or (
+                0 < n_distinct <= MAX_REPEATED_LABELS
+                and num_present >= MIN_AVG_REPEATS * n_distinct
+                and sorted(len(str(v)) for v in distinct_values)[n_distinct // 2] <= MAX_LABEL_CHARS
+            )
             if types.ID in semantic_types_dict:
                 column_meta["num_distinct_values"] = len(distinct_values)
-            elif not categorical and num_text >= text_threshold:
+            elif not categorical and not labels and num_text >= text_threshold:
                 # Free text
                 semantic_types_dict[types.TEXT] = None
             else:
                 # Count distinct values
                 column_meta["num_distinct_values"] = len(distinct_values)
-                max_categorical = MAX_CATEGORICAL_RATIO * (len(array) - num_empty)
                 if (
                     categorical
-                    or len(distinct_values) <= max_categorical
+                    or labels
                     or types.BOOLEAN in semantic_types_dict
                 ):
                     semantic_types_dict[types.CATEGORICAL] = distinct_values

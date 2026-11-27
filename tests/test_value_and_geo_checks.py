@@ -213,3 +213,25 @@ def test_full_statistics_read_numbers_like_the_profile(tmp_path):
         assert plot["type"] == "histogram_numerical" and plot["computed_on"] == "all_rows", as_csv
         counted = sum(b["count"] for b in plot["data"]) + plot.get("below", 0) + plot.get("above", 0)
         assert counted == 300, as_csv  # every price, no NULL
+
+
+# --- labels -------------------------------------------------------------------
+
+
+def test_multiword_answer_options_are_categorical():
+    answers = ["Strongly agree", "Somewhat agree", "Neither agree nor disagree", "Disagree"] * 50
+    semantic = _types(answers)[1]
+    assert types.CATEGORICAL in semantic and types.TEXT not in semantic
+
+
+def test_repeated_short_tags_are_categorical():
+    tags = [f"Group{i % 20}.tag{i % 140}" for i in range(760)]  # 140 tags, ~5 uses each
+    assert types.CATEGORICAL in _types(tags, name="tag")[1]
+
+
+def test_free_text_stays_text():
+    sentences = [f"The participant said thing number {i} about the program today" for i in range(200)]
+    semantic = _types(sentences, name="comment")[1]
+    assert types.TEXT in semantic and types.CATEGORICAL not in semantic
+    long_repeated = [f"A long free-text answer that repeats a few times, number {i % 50}, " * 3 for i in range(300)]
+    assert types.TEXT in _types(long_repeated, name="answer")[1]  # repeated, but not short
